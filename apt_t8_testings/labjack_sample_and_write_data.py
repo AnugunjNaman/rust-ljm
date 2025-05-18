@@ -1,21 +1,17 @@
-from labjack import ljm
-import socket
 import asyncio
-from asyncio import Queue
-import json
-from jsonschema import validate, ValidationError
-import nats
-from nats.aio.client import Client as NATS
-from nats.js.errors import KeyNotFoundError
-from nats.js.errors import BucketNotFoundError
-from nats.aio.errors import ErrNoServers
-import signal
 import datetime
-import pyarrow as pa
-import os
-from filelock import FileLock
-import pickle
+import json
 import shelve
+import signal
+import socket
+from asyncio import Queue
+
+from filelock import FileLock
+from jsonschema import ValidationError, validate
+from labjack import ljm
+from nats.aio.client import Client as NATS
+from nats.aio.errors import ErrNoServers
+from nats.js.errors import BucketNotFoundError, KeyNotFoundError
 
 NATS_SERVER_IP = ["nats://127.0.0.1:4222"]
 

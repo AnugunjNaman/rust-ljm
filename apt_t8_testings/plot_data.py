@@ -1,5 +1,5 @@
-import pandas as pd
 import matplotlib.pyplot as plt
+import pandas as pd
 
 # Define the file name dynamically
 file_name = 'StrainGauge2.csv'  # Replace with the name of your file or pass dynamically

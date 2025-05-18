@@ -1,16 +1,17 @@
-from labjack import ljm
-import socket
 import asyncio
-from asyncio import Queue
-import json
-from jsonschema import validate, ValidationError
-import nats
-from nats.aio.client import Client as NATS
-from nats.js.errors import KeyNotFoundError
-from nats.js.errors import BucketNotFoundError
-import signal
 import datetime
+import json
+import signal
+import socket
+from asyncio import Queue
+
+import nats
 import pyarrow as pa
+from jsonschema import ValidationError, validate
+from labjack import ljm
+from nats.aio.client import Client as NATS
+from nats.js.errors import BucketNotFoundError, KeyNotFoundError
+
 
 def handle_exit_signal(loop, sig):
     """Handles exit signals like Ctrl+C."""
@@ -134,17 +135,12 @@ async def nats_publish(topic: str, message: pa.Buffer):
         print(f"Error while connecting or publishing to NATS: {e}")
 
         
-import datetime
 import asyncio
-import pyarrow as pa
+import datetime
 
-import datetime
-import asyncio
 import pyarrow as pa
 import pyarrow.ipc  # To serialize the RecordBatch to a byte stream
 
-import asyncio
-import pyarrow as pa
 
 async def check_buffer_and_prepare_publish(channel_name, channel_data, timestamp_data, initial_time, scan_rate, nats_stream_rate, current_schema, handle, lock):
     """

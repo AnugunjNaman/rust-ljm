@@ -1,8 +1,9 @@
 import asyncio
-import pyarrow as pa
-import zlib
-import msgpack
 import datetime
+import zlib
+
+import msgpack
+import pyarrow as pa
 from nats.aio.client import Client as NATS
 
 # Buffer to store up to 20 batches per channel

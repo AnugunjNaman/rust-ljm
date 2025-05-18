@@ -1,9 +1,10 @@
 import asyncio
 import csv
-from nats.aio.client import Client as NATS
-import zlib
-import msgpack
 import datetime
+import zlib
+
+import msgpack
+from nats.aio.client import Client as NATS
 
 # Buffer to store up to 20 batches per channel
 BATCH_SIZE = 5
