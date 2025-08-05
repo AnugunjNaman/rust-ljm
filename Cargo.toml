@@ -1,0 +1,19 @@
+[package]
+name = "spr4918"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flatbuffers = "25.2.10"
+ljmrs = "0.2.2"
+tokio = "1.47.1"
+
+[features]
+# Default: use static linking (safe & simple)
+default = ["staticlib"]
+
+# Optional: enable dynamic linking
+dynlink = []
+
+# Optional: static linking (if you want to be explicit)
+staticlib = []
