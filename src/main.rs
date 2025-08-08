@@ -10,12 +10,13 @@ use ljmrs::LJMLibrary;
 use spr4918::stream_generated; // from lib.rs
 use stream_generated::stream::{ScanBatch, ScanBatchArgs};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 struct StreamConfig {
     scans_per_read: usize,
     suggested_scan_rate: f64,
     channels: Vec<i32>,
 }
+
 
 enum ConsumerMsg {
     Data(Vec<u8>),
@@ -117,6 +118,10 @@ async fn main() {
         "ANY".to_string(),
     ).expect("Failed to open LabJack device");
     println!("Opened LabJack. Handle: {}", open_call);
+    if let Err(e) = LJMLibrary::stream_stop(open_call) {
+        // It's fine if this returns "not active" — we just ignore it
+        eprintln!("(preflight) stream_stop: ignoring: {:?}", e);
+    }
 
     let config_path = "config.json";
     let initial_config = load_config(config_path).await.unwrap_or(StreamConfig {
@@ -249,13 +254,22 @@ async fn main() {
             }
 
             if rx_config.has_changed().unwrap() {
-                println!("Config changed! Restarting stream + rolling output...");
-                LJMLibrary::stream_stop(open_call).unwrap();
-                let new_cfg = rx_config.borrow().clone();
-                tx_msg.send(ConsumerMsg::Rollover(new_cfg)).await.unwrap();
-                time::sleep(time::Duration::from_millis(500)).await;
-                continue 'outer;
+                // Consume the change flag and get the new value
+                let new_cfg = rx_config.borrow_and_update().clone();
+
+                if new_cfg != cfg {
+                    println!("Config changed! Restarting stream + rolling output...");
+                    LJMLibrary::stream_stop(open_call).unwrap();
+
+                    tx_msg.send(ConsumerMsg::Rollover(new_cfg)).await.unwrap();
+
+                    time::sleep(time::Duration::from_millis(500)).await;
+                    continue 'outer;
+                } else {
+                    // Same config; do nothing (we just cleared the flag)
+                }
             }
+
 
             match LJMLibrary::stream_read(open_call) {
                 Ok(read_value) => {
