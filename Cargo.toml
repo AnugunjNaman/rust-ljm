@@ -28,9 +28,13 @@ dynlink = []
 staticlib = []
 
 [[bin]]
-name = "labjack-streamer"
+name = "streamer"
 path = "src/main.rs"
 
 [[bin]]
-name = "export-bin-to-csv"
+name = "csv-exporter"
 path = "src/bin/export_bin_to_csv.rs"
+
+[[bin]]
+name = "info"
+path = "src/info.rs"
