@@ -1,0 +1,5 @@
+{
+  "scans_per_read": 200,
+  "suggested_scan_rate": 2000.0,
+  "channels": [0, 1, 5]
+}

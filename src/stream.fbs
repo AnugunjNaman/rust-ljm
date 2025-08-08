@@ -1,0 +1,11 @@
+namespace stream;
+
+table ScanBatch {
+  timestamp: string;          // RFC3339 timestamp when batch started
+  channel_ids: [int];         // e.g., [0,1,5]
+  values: [double];           // NOTE: double (f64) to match ljmrs
+  scans_in_batch: int;        // number of scans in this batch
+  channels_per_scan: int;     // number of channels per scan
+}
+
+root_type ScanBatch;
