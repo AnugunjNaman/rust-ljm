@@ -6,3 +6,6 @@
 
 # CSV log/output files
 *.csv
+
+# FBS log/output files
+*.fbsdata
