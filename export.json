@@ -1,8 +1,0 @@
-{
-  "input_bins": [
-    "2025-08-08_195741_2000Hz_200scan_AIN5_AIN6.bin",
-    "2025-08-08_195809_2000Hz_200scan_AIN0_AIN1_AIN2_AIN3_AIN4_AIN5_AIN6.bin",
-    "2025-08-08_195839_2000Hz_200scan_AIN0_AIN1_AIN2_AIN3_AIN4_AIN5_AIN6_AIN7.bin"
-  ],
-  "output_dir": "exports"
-}

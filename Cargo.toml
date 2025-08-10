@@ -1,11 +1,7 @@
 [package]
-name = "spr4918"
+name = "rust-ljm"
 version = "0.1.0"
 edition = "2024"
-
-[lib]
-name = "spr4918"
-path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1.88"
@@ -31,10 +27,4 @@ staticlib = []
 name = "streamer"
 path = "src/main.rs"
 
-[[bin]]
-name = "csv-exporter"
-path = "src/bin/export_bin_to_csv.rs"
 
-[[bin]]
-name = "info"
-path = "src/info.rs"
