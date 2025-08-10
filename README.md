@@ -146,7 +146,7 @@ rust-ljm/
 
 ## License
 
-MIT License
+TBD
 
 ## Acknowledgments
 
