@@ -1,13 +1,10 @@
 use std::thread;
 use std::time::Duration;
-
-extern crate ljmrs;
-
-use ljmrs::handle::{ConnectionType, DeviceType};
 use ljmrs::{LJMLibrary, LJMError};
+use ljmrs::handle::{ConnectionType, DeviceType};
 
 fn main() -> Result<(), LJMError> {
-    // Load LabJackM (pick one feature at build time)
+    // Choose one feature at build time
     #[cfg(all(feature = "dynlink", not(feature = "staticlib")))]
     unsafe {
         let path = std::env::var("LJM_PATH").ok();
@@ -18,11 +15,8 @@ fn main() -> Result<(), LJMError> {
         LJMLibrary::init()?;
     }
 
-    // Open first found device
     let handle = LJMLibrary::open_jack(DeviceType::ANY, ConnectionType::ANY, "ANY")?;
 
-
-    // Device info -> decide how many AINs
     let info = LJMLibrary::get_handle_info(handle)?;
     let num_ains = match info.device_type {
         DeviceType::T4 => 12, // AIN0–AIN11
@@ -31,34 +25,32 @@ fn main() -> Result<(), LJMError> {
         _ => 14,
     };
 
-    // Configure inputs once
     if matches!(info.device_type, DeviceType::T7) {
-        LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?; // single-ended
+        // 199 = single-ended
+        LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?;
     }
     LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 10.0_f64)?;         // ±10 V (±11 V on T8)
     LJMLibrary::write_name(handle, "AIN_ALL_RESOLUTION_INDEX", 0_u32)?; // default
 
     println!(
         "Opened {:?} (serial {}), reading AIN0..AIN{} — Ctrl+C to stop.",
-        info.device_type,
-        info.serial_number,
-        num_ains - 1
+        info.device_type, info.serial_number, num_ains - 1
     );
 
     loop {
         for ch in 0..num_ains {
             let name = format!("AIN{}", ch);
-            let v = LJMLibrary::read_name(handle, name.into_bytes())?;
-
+            let v: f64 = LJMLibrary::read_name(handle, name)?; // move the String
             print!("AIN{:<2} = {:>8.5} V   ", ch, v);
             if (ch + 1) % 4 == 0 {
                 println!();
             }
         }
+
         println!();
         thread::sleep(Duration::from_millis(200)); // ~5 Hz
     }
 
-    // LJMLibrary::close_jack(handle)?; // usually unreachable (Ctrl+C)
+    // LJMLibrary::close_jack(handle)?; // unreachable under Ctrl+C
     // Ok(())
 }
