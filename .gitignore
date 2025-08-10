@@ -1,4 +1,8 @@
+# Rust target directory
 /target
-/exports
 
+# Binary files
 *.bin
+
+# CSV log/output files
+*.csv

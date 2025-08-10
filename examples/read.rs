@@ -38,7 +38,7 @@ fn main() -> Result<(), LJMError> {
     );
 
     loop {
-        for ch in 0..num_ains {
+        for ch in 0..2 {
             let name = format!("AIN{}", ch);
             let v: f64 = LJMLibrary::read_name(handle, name)?; // move the String
             print!("AIN{:<2} = {:>8.5} V   ", ch, v);
