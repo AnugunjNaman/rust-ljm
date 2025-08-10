@@ -124,7 +124,7 @@ async fn sample_with_config(
     }
     LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 10.0_f64)?;
     LJMLibrary::write_name(handle, "AIN_ALL_RESOLUTION_INDEX", 0_u32)?;
-    LJMLibrary::write_name(handle, "STREAM_SETTLING_US", 50_u32)?;
+    LJMLibrary::write_name(handle, "STREAM_SETTLING_US", 0_u32)?;
 
 
     // Prepare channel addresses
