@@ -31,4 +31,10 @@ staticlib = []
 name = "streamer"
 path = "src/main.rs"
 
+[[bin]]
+name = "fbs_reader"
+path = "src/bin/fbs_reader.rs"
+
+
+
 
