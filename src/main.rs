@@ -184,7 +184,7 @@ async fn sample_with_config(
     if matches!(info.device_type, DeviceType::T7) {
         LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?;
     }
-    LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 10.0_f64)?;
+    LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 1.0_f64)?;
     LJMLibrary::write_name(handle, "AIN_ALL_RESOLUTION_INDEX", 0_u32)?;
     LJMLibrary::write_name(handle, "STREAM_SETTLING_US", 0_u32)?;
 

@@ -1,6 +1,6 @@
 {
-    "scans_per_read": 100,
-    "suggested_scan_rate": 1000.0,
+    "scans_per_read": 200,
+    "suggested_scan_rate": 2000.0,
     "channels": [0, 1, 2],
     "nats_url": "nats://100.64.0.127:4222",
     "nats_subject": "labjack.data",

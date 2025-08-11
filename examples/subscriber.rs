@@ -18,7 +18,7 @@ use sample_data_generated::sampler;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let nats_url = "nats://sys:sys@100.64.0.127:4222";
+    let nats_url = "nats://100.64.0.127:4222";
     let subject = "labjack.data";
 
     // Open CSV in append mode, create if missing
