@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 use chrono::{Utc, TimeZone};
 use chrono_tz::America::New_York;
 use notify::{Watcher, RecursiveMode, recommended_watcher};
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant};
 
 use ljmrs::{LJMLibrary, LJMError};
 use ljmrs::handle::{DeviceType, ConnectionType};
@@ -89,45 +89,59 @@ async fn watch_config_file(
 ) {
     let (tx, mut rx) = mpsc::channel(8);
 
-    // Blocking watcher in spawn_blocking
-    tokio::task::spawn_blocking({
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+
+    let blocking_jh = tokio::task::spawn_blocking({
         let path_clone = path.clone();
-        let tx = tx.clone();
         move || {
             let mut watcher = recommended_watcher(move |res| {
                 let _ = tx.blocking_send(res);
             }).expect("Failed to init watcher");
 
-            watcher.watch(Path::new(&path_clone), RecursiveMode::NonRecursive)
+            watcher
+                .watch(Path::new(&path_clone), RecursiveMode::NonRecursive)
                 .expect("Failed to watch config file");
 
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
+            // Block here until told to stop
+            let _ = stop_rx.recv();
+            // watcher is dropped automatically here
         }
     });
 
     let mut last_update = Instant::now();
-    while let Some(res) = rx.recv().await {
-        if *shutdown_rx.borrow() {
-            println!("[watch_config_file] Shutdown received, exiting watcher loop.");
-            break;
-        }
 
-        if res.is_ok() && last_update.elapsed() > Duration::from_millis(200) {
-            last_update = Instant::now();
-            match load_config(&path) {
-                Ok(cfg) => {
-                    if cfg != *config_tx.borrow() {
-                        println!("Config updated: {:?}", cfg);
-                        let _ = config_tx.send(cfg);
+    loop {
+        tokio::select! {
+            maybe = rx.recv() => {
+                if let Some(res) = maybe {
+                    if res.is_ok() && last_update.elapsed() > Duration::from_millis(200) {
+                        last_update = Instant::now();
+                        match load_config(&path) {
+                            Ok(cfg) => {
+                                if cfg != *config_tx.borrow() {
+                                    println!("Config updated: {:?}", cfg);
+                                    let _ = config_tx.send(cfg);
+                                }
+                            }
+                            Err(e) => eprintln!("Failed to reload config: {:?}", e),
+                        }
                     }
+                } else {
+                    break; // channel closed
                 }
-                Err(e) => eprintln!("Failed to reload config: {:?}", e),
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    println!("[watch_config_file] Stopping watcher...");
+                    let _ = stop_tx.send(()); // Tell blocking thread to exit
+                    let _ = blocking_jh.await;
+                    break;
+                }
             }
         }
     }
 }
+
 
 async fn run_sampler(
     mut config_rx: watch::Receiver<SampleConfig>,
@@ -188,6 +202,11 @@ async fn ensure_stream_exists(
     Ok(())
 }
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering}
+};
+
 async fn sample_with_config(
     run_id: usize,
     cfg: SampleConfig,
@@ -206,7 +225,10 @@ async fn sample_with_config(
     let _guard = LabJackGuard { handle };
 
     let info = LJMLibrary::get_handle_info(handle)?;
-    println!("[run #{run_id}] Connected to {:?} (serial {})", info.device_type, info.serial_number);
+    println!(
+        "[run #{run_id}] Connected to {:?} (serial {})",
+        info.device_type, info.serial_number
+    );
 
     if matches!(info.device_type, DeviceType::T7) {
         LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?;
@@ -231,39 +253,34 @@ async fn sample_with_config(
         cfg.suggested_scan_rate,
         channel_addresses.clone(),
     )?;
-    println!("[run #{run_id}] Streaming started: {} scans/read @ {} Hz", cfg.scans_per_read, actual_rate);
+    println!(
+        "[run #{run_id}] Streaming started: {} scans/read @ {} Hz",
+        cfg.scans_per_read, actual_rate
+    );
 
-    // Channel between read task and publisher
     let (scan_tx, mut scan_rx) = mpsc::channel::<Vec<f64>>(32);
 
-    let read_handle = tokio::spawn({
-        let scan_tx = scan_tx.clone();
-        async move {
-            loop {
-                let res = tokio::task::spawn_blocking({
-                    let handle = handle;
-                    move || LJMLibrary::stream_read(handle)
-                }).await;
+    // Shared running flag for stopping the blocking loop
+    let running = Arc::new(AtomicBool::new(true));
+    let running_reader = running.clone();
+    let scan_tx_reader = scan_tx.clone();
 
-                match res {
-                    Ok(Ok(batch)) => {
-                        if scan_tx.send(batch).await.is_err() {
-                            break; // receiver gone, stop task
-                        }
+    // Single long-lived blocking task for reading
+    let read_handle = tokio::task::spawn_blocking(move || {
+        while running_reader.load(Ordering::Relaxed) {
+            match LJMLibrary::stream_read(handle) {
+                Ok(batch) => {
+                    if scan_tx_reader.blocking_send(batch).is_err() {
+                        break; // receiver gone
                     }
-                    Ok(Err(e)) => {
-                        eprintln!("[run #{run_id}] Error reading stream: {:?}", e);
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("[run #{run_id}] Join error in read task: {:?}", e);
-                        break;
-                    }
+                }
+                Err(e) => {
+                    eprintln!("[run #{run_id}] Error reading stream: {:?}", e);
+                    break;
                 }
             }
         }
     });
-
 
     let mut builder = FlatBufferBuilder::new();
 
@@ -287,6 +304,7 @@ async fn sample_with_config(
             }
             _ = config_rx.changed() => {
                 println!("[run #{run_id}] Config change detected. Stopping stream...");
+                running.store(false, Ordering::Relaxed);
                 let _ = LJMLibrary::stream_stop(handle);
                 drop(scan_tx);
                 let _ = read_handle.await;
@@ -295,6 +313,7 @@ async fn sample_with_config(
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     println!("[run #{run_id}] Shutdown signal received. Stopping stream...");
+                    running.store(false, Ordering::Relaxed);
                     let _ = LJMLibrary::stream_stop(handle);
                     drop(scan_tx);
                     let _ = read_handle.await;
