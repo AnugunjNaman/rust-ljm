@@ -1,11 +1,10 @@
-use tokio::sync::watch;
+use tokio::sync::{watch, mpsc};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
-use chrono::{Utc};
-use chrono::TimeZone;
+use chrono::{Utc, TimeZone};
 use chrono_tz::America::New_York;
 use notify::{Watcher, RecursiveMode, recommended_watcher};
-use std::sync::mpsc::channel;
+use tokio::time::{timeout, Duration, Instant};
 
 use ljmrs::{LJMLibrary, LJMError};
 use ljmrs::handle::{DeviceType, ConnectionType};
@@ -17,21 +16,20 @@ mod sample_data_generated {
     #![allow(dead_code, unused_imports)]
     include!("data_generated.rs");
 }
-
 use sample_data_generated::sampler::{self, ScanArgs};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct SampleConfig {
     scans_per_read: i32,
     suggested_scan_rate: f64,
     channels: Vec<u8>,
     nats_url: String,
     nats_subject: String,
-    nats_stream: String
+    nats_stream: String,
 }
 
 struct LabJackGuard {
-    handle: i32
+    handle: i32,
 }
 
 impl Drop for LabJackGuard {
@@ -46,9 +44,8 @@ async fn main() -> Result<(), LJMError> {
     let config_path = "config/sample.json";
     let cfg = load_config(config_path)
         .map_err(|e| LJMError::LibraryError(format!("Failed to load config: {}", e)))?;
-    let (config_tx, config_rx) = watch::channel(cfg);
 
-    // shutdown signal channel
+    let (config_tx, config_rx) = watch::channel(cfg);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Initialize LJM
@@ -60,8 +57,11 @@ async fn main() -> Result<(), LJMError> {
         LJMLibrary::init(path)?;
     }
 
+    // Spawn sampler
     tokio::spawn(run_sampler(config_rx.clone(), shutdown_rx.clone()));
-    tokio::spawn(watch_config_file(config_path.to_string(), config_tx));
+
+    // Spawn config watcher
+    tokio::spawn(watch_config_file(config_path.to_string(), config_tx, shutdown_rx.clone()));
 
     // Wait for Ctrl+C
     tokio::signal::ctrl_c()
@@ -69,33 +69,59 @@ async fn main() -> Result<(), LJMError> {
         .map_err(|e| LJMError::LibraryError(format!("Failed to listen for Ctrl+C: {}", e)))?;
 
     println!("Shutting down...");
-    let _ = shutdown_tx.send(true); // notify all tasks
+    let _ = shutdown_tx.send(true);
 
+    // Let background tasks shut down ????
+    tokio::time::sleep(Duration::from_millis(300)).await;
     Ok(())
 }
 
 fn load_config<P: AsRef<Path>>(path: P) -> Result<SampleConfig, std::io::Error> {
     let data = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&data).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("JSON parse error: {}", e))
-    })?)
+    Ok(serde_json::from_str(&data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("JSON parse error: {}", e)))?)
 }
 
-async fn watch_config_file(path: String, config_tx: watch::Sender<SampleConfig>) {
-    let (tx, rx) = channel();
-    let mut watcher = recommended_watcher(move |res| {
-        let _ = tx.send(res);
-    }).expect("Failed to init watcher");
+async fn watch_config_file(
+    path: String,
+    config_tx: watch::Sender<SampleConfig>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let (tx, mut rx) = mpsc::channel(8);
 
-    watcher.watch(Path::new(&path), RecursiveMode::NonRecursive)
-        .expect("Failed to watch config file");
+    // Blocking watcher in spawn_blocking
+    tokio::task::spawn_blocking({
+        let path_clone = path.clone();
+        let tx = tx.clone();
+        move || {
+            let mut watcher = recommended_watcher(move |res| {
+                let _ = tx.blocking_send(res);
+            }).expect("Failed to init watcher");
 
-    for res in rx {
-        if res.is_ok() {
+            watcher.watch(Path::new(&path_clone), RecursiveMode::NonRecursive)
+                .expect("Failed to watch config file");
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    });
+
+    let mut last_update = Instant::now();
+    while let Some(res) = rx.recv().await {
+        if *shutdown_rx.borrow() {
+            println!("[watch_config_file] Shutdown received, exiting watcher loop.");
+            break;
+        }
+
+        if res.is_ok() && last_update.elapsed() > Duration::from_millis(200) {
+            last_update = Instant::now();
             match load_config(&path) {
                 Ok(cfg) => {
-                    println!("Config updated: {:?}", cfg);
-                    let _ = config_tx.send(cfg);
+                    if cfg != *config_tx.borrow() {
+                        println!("Config updated: {:?}", cfg);
+                        let _ = config_tx.send(cfg);
+                    }
                 }
                 Err(e) => eprintln!("Failed to reload config: {:?}", e),
             }
@@ -105,34 +131,36 @@ async fn watch_config_file(path: String, config_tx: watch::Sender<SampleConfig>)
 
 async fn run_sampler(
     mut config_rx: watch::Receiver<SampleConfig>,
-    mut shutdown_rx: watch::Receiver<bool>
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let mut run_id = 0;
     loop {
         if *shutdown_rx.borrow() {
-            println!("Sampler shutting down...");
+            println!("[run_sampler] Sampler shutting down...");
             break;
         }
 
+        run_id += 1;
         let cfg = config_rx.borrow().clone();
-        println!("Starting sampler with {:?}", cfg);
+        println!("[run_sampler] Starting sampler run #{run_id} with {:?}", cfg);
 
-        if let Err(e) = sample_with_config(cfg.clone(), &mut config_rx, &mut shutdown_rx).await {
-            eprintln!("Sampler error: {:?}", e);
+        if let Err(e) = sample_with_config(run_id, cfg, &mut config_rx, &mut shutdown_rx).await {
+            eprintln!("[run_sampler] Sampler error: {:?}", e);
         }
 
         if *shutdown_rx.borrow() {
-            println!("Shutdown detected after sampler error/config change");
+            println!("[run_sampler] Shutdown detected after sampler error/config change");
             break;
         }
 
-        println!("Restarting sampler after config change...");
+        println!("[run_sampler] Restarting sampler after config change...");
     }
 }
 
 async fn ensure_stream_exists(
     js: &jetstream::Context,
     stream_name: &str,
-    subject: &str
+    subject: &str,
 ) -> Result<(), LJMError> {
     if js.get_stream(stream_name).await.is_ok() {
         println!("JetStream stream '{}' already exists.", stream_name);
@@ -161,25 +189,24 @@ async fn ensure_stream_exists(
 }
 
 async fn sample_with_config(
+    run_id: usize,
     cfg: SampleConfig,
     config_rx: &mut watch::Receiver<SampleConfig>,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<(), LJMError> {
-    // Connect to NATS & JetStream
+    println!("[run #{run_id}] Connecting to NATS at {}", cfg.nats_url);
     let nc = async_nats::connect(cfg.nats_url.clone())
         .await
         .map_err(|e| LJMError::LibraryError(format!("Failed to connect to NATS: {}", e)))?;
     let js = async_nats::jetstream::new(nc);
 
-    // Ensure stream exists
     ensure_stream_exists(&js, &cfg.nats_stream, &cfg.nats_subject).await?;
 
-    // Open LabJack device
     let handle = LJMLibrary::open_jack(DeviceType::ANY, ConnectionType::ANY, "ANY")?;
     let _guard = LabJackGuard { handle };
 
     let info = LJMLibrary::get_handle_info(handle)?;
-    println!("Connected to {:?} (serial {})", info.device_type, info.serial_number);
+    println!("[run #{run_id}] Connected to {:?} (serial {})", info.device_type, info.serial_number);
 
     if matches!(info.device_type, DeviceType::T7) {
         LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?;
@@ -204,48 +231,74 @@ async fn sample_with_config(
         cfg.suggested_scan_rate,
         channel_addresses.clone(),
     )?;
-    println!("Streaming started: {} scans/read @ {} Hz", cfg.scans_per_read, actual_rate);
+    println!("[run #{run_id}] Streaming started: {} scans/read @ {} Hz", cfg.scans_per_read, actual_rate);
+
+    // Channel between read task and publisher
+    let (scan_tx, mut scan_rx) = mpsc::channel::<Vec<f64>>(32);
+
+    let read_handle = tokio::spawn({
+        let scan_tx = scan_tx.clone();
+        async move {
+            loop {
+                let res = tokio::task::spawn_blocking({
+                    let handle = handle;
+                    move || LJMLibrary::stream_read(handle)
+                }).await;
+
+                match res {
+                    Ok(Ok(batch)) => {
+                        if scan_tx.send(batch).await.is_err() {
+                            break; // receiver gone, stop task
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("[run #{run_id}] Error reading stream: {:?}", e);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("[run #{run_id}] Join error in read task: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
 
     let mut builder = FlatBufferBuilder::new();
 
     loop {
         tokio::select! {
+            Some(batch) = scan_rx.recv() => {
+                let batch_timestamp = New_York.from_utc_datetime(&Utc::now().naive_utc()).to_rfc3339();
+                let scans = batch.chunks(num_channels);
+                for scan in scans {
+                    builder.reset();
+                    let ts_fb = builder.create_string(&batch_timestamp);
+                    let values_fb = builder.create_vector(scan);
+                    let scan_args = ScanArgs { timestamp: Some(ts_fb), values: Some(values_fb) };
+                    let scan_offset = sampler::Scan::create(&mut builder, &scan_args);
+                    builder.finish(scan_offset, None);
+                    let data = builder.finished_data().to_vec();
+                    if let Err(e) = js.publish(cfg.nats_subject.clone(), data.into()).await {
+                        eprintln!("[run #{run_id}] Failed to publish to NATS: {}", e);
+                    }
+                }
+            }
             _ = config_rx.changed() => {
-                println!("Config change detected. Restarting stream...");
+                println!("[run #{run_id}] Config change detected. Stopping stream...");
+                let _ = LJMLibrary::stream_stop(handle);
+                drop(scan_tx);
+                let _ = read_handle.await;
                 return Ok(());
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
-                    println!("Shutdown signal received. Stopping stream...");
+                    println!("[run #{run_id}] Shutdown signal received. Stopping stream...");
+                    let _ = LJMLibrary::stream_stop(handle);
+                    drop(scan_tx);
+                    let _ = read_handle.await;
                     return Ok(());
-                }
-            }
-            result = tokio::task::spawn_blocking({
-                let handle = handle;
-                move || LJMLibrary::stream_read(handle)
-            }) => {
-                let batch = result.map_err(|e| LJMError::LibraryError(format!("Task join error: {}", e)))??;
-                let batch_timestamp = New_York.from_utc_datetime(&Utc::now().naive_utc()).to_rfc3339();
-                let scans = batch.chunks(num_channels);
-
-                for scan in scans {
-                    builder.reset();
-
-                    let ts_fb = builder.create_string(&batch_timestamp);
-                    let values_fb = builder.create_vector(scan);
-
-                    let scan_args = ScanArgs {
-                        timestamp: Some(ts_fb),
-                        values: Some(values_fb),
-                    };
-                    let scan_offset = sampler::Scan::create(&mut builder, &scan_args);
-                    builder.finish(scan_offset, None);
-
-                    let data = builder.finished_data().to_vec();
-
-                    js.publish(cfg.nats_subject.clone(), data.into())
-                        .await
-                        .map_err(|e| LJMError::LibraryError(format!("Failed to publish to NATS: {}", e)))?;
                 }
             }
         }
