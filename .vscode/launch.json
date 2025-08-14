@@ -1,0 +1,155 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'streamer'",
+            "cargo": {
+                "args": ["build", "--bin=streamer", "--package=rust-ljm"],
+                "filter": { "name": "streamer", "kind": "bin" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'streamer'",
+            "cargo": {
+                "args": ["test", "--no-run", "--bin=streamer", "--package=rust-ljm"],
+                "filter": { "name": "streamer", "kind": "bin" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'info'",
+            "cargo": {
+                "args": ["build", "--example=info", "--package=rust-ljm"],
+                "filter": { "name": "info", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'info'",
+            "cargo": {
+                "args": ["test", "--no-run", "--example=info", "--package=rust-ljm"],
+                "filter": { "name": "info", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'read'",
+            "cargo": {
+                "args": ["build", "--example=read", "--package=rust-ljm"],
+                "filter": { "name": "read", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'read'",
+            "cargo": {
+                "args": ["test", "--no-run", "--example=read", "--package=rust-ljm"],
+                "filter": { "name": "read", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'stream'",
+            "cargo": {
+                "args": ["build", "--example=stream", "--package=rust-ljm"],
+                "filter": { "name": "stream", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'stream'",
+            "cargo": {
+                "args": ["test", "--no-run", "--example=stream", "--package=rust-ljm"],
+                "filter": { "name": "stream", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'subscriber'",
+            "cargo": {
+                "args": ["build", "--example=subscriber", "--package=rust-ljm"],
+                "filter": { "name": "subscriber", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'subscriber'",
+            "cargo": {
+                "args": ["test", "--no-run", "--example=subscriber", "--package=rust-ljm"],
+                "filter": { "name": "subscriber", "kind": "example" }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "DYLD_LIBRARY_PATH": "/usr/local/lib",
+                "LJM_PATH": "/usr/local/lib"
+            }
+        }
+    ]
+}
