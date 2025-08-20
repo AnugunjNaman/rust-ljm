@@ -29,7 +29,7 @@ fn main() -> Result<(), LJMError> {
         // 199 = single-ended
         LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?;
     }
-    LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 10.0_f64)?;         // ±10 V (±11 V on T8)
+    LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 1.0_f64)?;         // ±10 V (±11 V on T8)
     LJMLibrary::write_name(handle, "AIN_ALL_RESOLUTION_INDEX", 0_u32)?; // default
 
     println!(
@@ -38,7 +38,7 @@ fn main() -> Result<(), LJMError> {
     );
 
     loop {
-        for ch in 0..2 {
+        for ch in 0..14 {
             let name = format!("AIN{}", ch);
             let v: f64 = LJMLibrary::read_name(handle, name)?; // move the String
             print!("AIN{:<2} = {:>8.5} V   ", ch, v);

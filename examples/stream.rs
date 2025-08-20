@@ -30,7 +30,7 @@ fn main() -> Result<(), LJMError> {
         LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?;
     }
     LJMLibrary::write_name(handle, "AIN_ALL_NEGATIVE_CH", 199_u32)?; // single-ended
-    LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 10.0_f64)?;      // ±10 V
+    LJMLibrary::write_name(handle, "AIN_ALL_RANGE", 1.0_f64)?;      // ±10 V
     LJMLibrary::write_name(handle, "AIN_ALL_RESOLUTION_INDEX", 8_u32)?; // match read mode
     LJMLibrary::write_name(handle, "STREAM_SETTLING_US", 0.0_f64)?;
 
@@ -43,7 +43,12 @@ fn main() -> Result<(), LJMError> {
     let chans = vec![
         LJMLibrary::name_to_address("AIN0")?.0,
         LJMLibrary::name_to_address("AIN1")?.0,
+        LJMLibrary::name_to_address("AIN2")?.0,
+        LJMLibrary::name_to_address("AIN3")?.0,
         LJMLibrary::name_to_address("AIN4")?.0,
+        LJMLibrary::name_to_address("AIN5")?.0,
+        LJMLibrary::name_to_address("AIN6")?.0,
+        LJMLibrary::name_to_address("AIN7")?.0,
     ];
 
     // Start stream
