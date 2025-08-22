@@ -1,5 +1,4 @@
 use ljmrs::{LJMLibrary, DeviceType, ConnectionType};
-use std::net::Ipv4Addr;
 
 fn main() {
     #[cfg(feature = "staticlib")]
