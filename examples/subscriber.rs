@@ -16,15 +16,11 @@ mod sample_data_generated {
 }
 use sample_data_generated::sampler;
 
-/// Format helpers for subject & filenames
 fn pad_asset(n: u32) -> String { format!("{n:03}") }
 
-/// Extract "chXX" (e.g., "ch01") from subject "labjack.001.data.ch01"
 fn extract_channel_token(subject: &str) -> Option<String> {
     subject.split('.').last().map(|s| s.to_string())
 }
-
-/// Open (or create) a per-channel CSV file under `out_dir`, writing header if new/empty
 fn open_csv_for_channel(out_dir: &Path, asset: u32, ch_token: &str) -> std::io::Result<File> {
     let fname = format!("labjack_{}_{}.csv", pad_asset(asset), ch_token);
     let path = out_dir.join(fname);
@@ -39,7 +35,6 @@ fn open_csv_for_channel(out_dir: &Path, asset: u32, ch_token: &str) -> std::io::
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // ---- Config (env with sensible defaults) ----
     let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://0.0.0.0:4222".to_string());
     let subject_prefix = env::var("SUBJECT_PREFIX").unwrap_or_else(|_| "labjack".to_string());
     let asset_number: u32 = env::var("ASSET_NUMBER")
@@ -47,7 +42,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
 
-    // Output directory for CSVs
     let out_dir_str = env::var("OUTPUT_DIR").unwrap_or_else(|_| "outputs".to_string());
     let out_dir = PathBuf::from(&out_dir_str);
     if !out_dir.exists() {
@@ -60,17 +54,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Subscribe to all per-channel subjects for this asset
     let wildcard = format!("{}.{}.data.*", subject_prefix, pad_asset(asset_number));
 
-    // ---- NATS connect & subscribe ----
     let nc = async_nats::connect(&nats_url).await?;
     println!("Connected to NATS at {}", nats_url);
 
     let mut sub = nc.subscribe(wildcard.clone()).await?;
     println!("Subscribed to '{}'", wildcard);
 
-    // Maintain per-channel file handles
+
     let mut files: HashMap<String, File> = HashMap::new();
 
-    // ---- Receive loop ----
     while let Some(msg) = sub.next().await {
         // Determine channel token from subject (e.g., "ch01")
         let ch_token = match extract_channel_token(&msg.subject) {
@@ -81,7 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         };
 
-        // Decode FlatBuffers payload
+
         match root::<sampler::Scan>(&msg.payload) {
             Ok(scan) => {
                 let timestamp = scan.timestamp().unwrap_or("<no ts>");

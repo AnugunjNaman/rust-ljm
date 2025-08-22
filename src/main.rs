@@ -10,7 +10,7 @@ use ljmrs::handle::{DeviceType, ConnectionType};
 use flatbuffers::FlatBufferBuilder;
 use async_nats::jetstream::{self, kv, stream::Config as StreamConfig};
 use async_nats::jetstream::kv::Operation;
-use futures_util::StreamExt; // for .next() on KV watch
+use futures_util::StreamExt;
 
 mod sample_data_generated {
     #![allow(dead_code, unused_imports)]
@@ -119,7 +119,6 @@ async fn load_config_from_kv(store: &kv::Store, key: &str) -> Result<SampleConfi
         Err(e) => Err(LJMError::LibraryError(format!("KV entry error for '{}': {}", key, e))),
     }
 }
-
 
 
 async fn watch_kv_config(
@@ -303,8 +302,6 @@ async fn sample_with_config(
     }
 }
 
-// ---- Main: bootstrap with KV config -----------------------------------------
-
 async fn run_sampler(
     mut config_rx: tokio::sync::watch::Receiver<SampleConfig>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -333,9 +330,11 @@ async fn run_sampler(
 }
 
 
+// ---- Main: bootstrap with KV config -----------------------------------------
+
 #[tokio::main]
 async fn main() -> Result<(), LJMError> {
-    // Connect to NATS first to read KV config
+    
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://0.0.0.0:4222".into());
     let nc = async_nats::connect(&nats_url).await
         .map_err(|e| LJMError::LibraryError(format!("NATS connect failed: {}", e)))?;
@@ -361,11 +360,9 @@ async fn main() -> Result<(), LJMError> {
         LJMLibrary::init(path)?;
     }
 
-    // Spawn sampler & KV watcher
     tokio::spawn(run_sampler(config_rx.clone(), shutdown_rx.clone()));
     tokio::spawn(watch_kv_config(store, key.clone(), config_tx.clone(), shutdown_rx.clone()));
 
-    // Wait for Ctrl+C
     tokio::signal::ctrl_c()
         .await
         .map_err(|e| LJMError::LibraryError(format!("Failed to listen for Ctrl+C: {}", e)))?;
