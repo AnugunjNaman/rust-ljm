@@ -1,16 +1,16 @@
 use tokio::sync::{watch, mpsc};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
 use chrono::{Utc, TimeZone};
 use chrono_tz::America::New_York;
-use notify::{Watcher, RecursiveMode, recommended_watcher};
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 use ljmrs::{LJMLibrary, LJMError};
 use ljmrs::handle::{DeviceType, ConnectionType};
 
 use flatbuffers::FlatBufferBuilder;
-use async_nats::jetstream::{self, stream::Config as StreamConfig};
+use async_nats::jetstream::{self, kv, stream::Config as StreamConfig};
+use async_nats::jetstream::kv::Operation;
+use futures_util::StreamExt; // for .next() on KV watch
 
 mod sample_data_generated {
     #![allow(dead_code, unused_imports)]
@@ -40,6 +40,8 @@ impl Drop for LabJackGuard {
     }
 }
 
+// ---- Subject helpers --------------------------------------------------------
+
 fn pad_channel(ch: u8) -> String {
     format!("ch{ch:02}")
 }
@@ -56,137 +58,7 @@ fn stream_subject_wildcard(prefix: &str, asset: u32) -> String {
     format!("{}.{}.data.*", prefix, pad_asset(asset))
 }
 
-#[tokio::main]
-async fn main() -> Result<(), LJMError> {
-    let config_path = "config/sample.json";
-    let cfg = load_config(config_path)
-        .map_err(|e| LJMError::LibraryError(format!("Failed to load config: {}", e)))?;
-
-    let (config_tx, config_rx) = watch::channel(cfg);
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-    // Initialize LJM
-    #[cfg(feature = "staticlib")]
-    unsafe { LJMLibrary::init()?; }
-    #[cfg(all(feature = "dynlink", not(feature = "staticlib")))]
-    unsafe {
-        let path = std::env::var("LJM_PATH").ok();
-        LJMLibrary::init(path)?;
-    }
-
-    // Spawn sampler
-    tokio::spawn(run_sampler(config_rx.clone(), shutdown_rx.clone()));
-
-    // Spawn config watcher
-    tokio::spawn(watch_config_file(config_path.to_string(), config_tx, shutdown_rx.clone()));
-
-    // Wait for Ctrl+C
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|e| LJMError::LibraryError(format!("Failed to listen for Ctrl+C: {}", e)))?;
-
-    println!("Shutting down...");
-    let _ = shutdown_tx.send(true);
-
-    // Let background tasks shut down ????
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    Ok(())
-}
-
-fn load_config<P: AsRef<Path>>(path: P) -> Result<SampleConfig, std::io::Error> {
-    let data = fs::read_to_string(path)?;
-    Ok(serde_json::from_str(&data)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("JSON parse error: {}", e)))?)
-}
-
-async fn watch_config_file(
-    path: String,
-    config_tx: watch::Sender<SampleConfig>,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    let (tx, mut rx) = mpsc::channel(8);
-
-    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-
-    let blocking_jh = tokio::task::spawn_blocking({
-        let path_clone = path.clone();
-        move || {
-            let mut watcher = recommended_watcher(move |res| {
-                let _ = tx.blocking_send(res);
-            }).expect("Failed to init watcher");
-
-            watcher
-                .watch(Path::new(&path_clone), RecursiveMode::NonRecursive)
-                .expect("Failed to watch config file");
-
-            // Block here until told to stop
-            let _ = stop_rx.recv();
-            // watcher is dropped automatically here
-        }
-    });
-
-    let mut last_update = Instant::now();
-
-    loop {
-        tokio::select! {
-            maybe = rx.recv() => {
-                if let Some(res) = maybe {
-                    if res.is_ok() && last_update.elapsed() > Duration::from_millis(200) {
-                        last_update = Instant::now();
-                        match load_config(&path) {
-                            Ok(cfg) => {
-                                if cfg != *config_tx.borrow() {
-                                    println!("Config updated: {:?}", cfg);
-                                    let _ = config_tx.send(cfg);
-                                }
-                            }
-                            Err(e) => eprintln!("Failed to reload config: {:?}", e),
-                        }
-                    }
-                } else {
-                    break; // channel closed
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    println!("[watch_config_file] Stopping watcher...");
-                    let _ = stop_tx.send(()); // Tell blocking thread to exit
-                    let _ = blocking_jh.await;
-                    break;
-                }
-            }
-        }
-    }
-}
-
-
-async fn run_sampler(
-    mut config_rx: watch::Receiver<SampleConfig>,
-    mut shutdown_rx: watch::Receiver<bool>,
-) {
-    let mut run_id = 0;
-    loop {
-        if *shutdown_rx.borrow() {
-            println!("[run_sampler] Sampler shutting down...");
-            break;
-        }
-
-        run_id += 1;
-        let cfg = config_rx.borrow().clone();
-        println!("[run_sampler] Starting sampler run #{run_id} with {:?}", cfg);
-
-        if let Err(e) = sample_with_config(run_id, cfg, &mut config_rx, &mut shutdown_rx).await {
-            eprintln!("[run_sampler] Sampler error: {:?}", e);
-        }
-
-        if *shutdown_rx.borrow() {
-            println!("[run_sampler] Shutdown detected after sampler error/config change");
-            break;
-        }
-
-        println!("[run_sampler] Restarting sampler after config change...");
-    }
-}
+// ---- NATS JetStream: Stream ensure ------------------------------------------
 
 async fn ensure_stream_exists(
     js: &jetstream::Context,
@@ -218,6 +90,80 @@ async fn ensure_stream_exists(
 
     Ok(())
 }
+
+// ---- NATS JetStream KV: bucket + config load/watch --------------------------
+
+async fn ensure_kv_bucket(js: &jetstream::Context, bucket: &str) -> Result<kv::Store, LJMError> {
+    if let Ok(store) = js.get_key_value(bucket).await {
+        println!("KV bucket '{}' already exists.", bucket);
+        return Ok(store);
+    }
+    println!("Creating KV bucket '{}'", bucket);
+    let cfg = kv::Config {
+        bucket: bucket.to_string(),
+        history: 5,
+        ..Default::default()
+    };
+    js.create_key_value(cfg)
+        .await
+        .map_err(|e| LJMError::LibraryError(format!("Failed to create KV bucket: {}", e)))
+}
+
+async fn load_config_from_kv(store: &kv::Store, key: &str) -> Result<SampleConfig, LJMError> {
+    match store.entry(key).await {
+        Ok(Some(entry)) => {
+            serde_json::from_slice::<SampleConfig>(entry.value.as_ref())
+                .map_err(|e| LJMError::LibraryError(format!("Config JSON parse error: {}", e)))
+        }
+        Ok(None) => Err(LJMError::LibraryError(format!("KV key '{}' not found", key))),
+        Err(e) => Err(LJMError::LibraryError(format!("KV entry error for '{}': {}", key, e))),
+    }
+}
+
+
+
+async fn watch_kv_config(
+    store: kv::Store,
+    key: String,
+    config_tx: tokio::sync::watch::Sender<SampleConfig>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut watch = match store.watch(&key).await {
+        Ok(w) => w,
+        Err(e) => { eprintln!("[watch_kv_config] watch error: {}", e); return; }
+    };
+    println!("[watch_kv_config] Watching KV key '{}'", key);
+
+    loop {
+        tokio::select! {
+            maybe = watch.next() => {
+                match maybe {
+                    Some(Ok(entry)) => {
+                        if entry.operation == Operation::Put {
+                            if let Ok(new_cfg) = serde_json::from_slice::<SampleConfig>(entry.value.as_ref()) {
+                                if new_cfg != *config_tx.borrow() {
+                                    println!("[watch_kv_config] KV config updated (rev {}): {:?}", entry.revision, new_cfg);
+                                    let _ = config_tx.send(new_cfg);
+                                }
+                            } else {
+                                eprintln!("[watch_kv_config] Invalid JSON in KV for key '{}'", entry.key);
+                            }
+                        } else {
+                            eprintln!("[watch_kv_config] {:?} for key '{}', ignoring.", entry.operation, entry.key);
+                        }
+                    }
+                    Some(Err(e)) => eprintln!("[watch_kv_config] stream err: {}", e),
+                    None => { eprintln!("[watch_kv_config] watch ended"); break; }
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() { println!("[watch_kv_config] shutdown"); break; }
+            }
+        }
+    }
+}
+
+// ---- Sampler ----------------------------------------------------------------
 
 use std::sync::{
     Arc,
@@ -304,11 +250,12 @@ async fn sample_with_config(
     loop {
         tokio::select! {
             Some(batch) = scan_rx.recv() => {
-                
                 let batch_timestamp = New_York.from_utc_datetime(&Utc::now().naive_utc()).to_rfc3339();
-                let scans = batch.chunks(num_channels);
 
-                let mut per_channel: Vec<Vec<f64>> = (0..num_channels).map(|_| Vec::with_capacity(scans.len())).collect();
+                let scans = batch.chunks(num_channels);
+                let mut per_channel: Vec<Vec<f64>> = (0..num_channels)
+                    .map(|_| Vec::with_capacity(scans.len()))
+                    .collect();
 
                 for scan in batch.chunks(num_channels) {
                     for (i, v) in scan.iter().enumerate() {
@@ -330,7 +277,7 @@ async fn sample_with_config(
                     let subject = channel_subject(&cfg.nats_subject, cfg.asset_number, ch_num);
 
                     if let Err(e) = js.publish(subject, data.into()).await {
-                        eprint!("[run #{run_id}] Failed to publish to NATS: {}", e);
+                        eprintln!("[run #{run_id}] Failed to publish to NATS: {}", e);
                     }
                 }
             }
@@ -354,4 +301,77 @@ async fn sample_with_config(
             }
         }
     }
+}
+
+// ---- Main: bootstrap with KV config -----------------------------------------
+
+async fn run_sampler(
+    mut config_rx: tokio::sync::watch::Receiver<SampleConfig>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut run_id = 0;
+    loop {
+        if *shutdown_rx.borrow() {
+            println!("[run_sampler] Sampler shutting down...");
+            break;
+        }
+        run_id += 1;
+        let cfg = config_rx.borrow().clone();
+        println!("[run_sampler] Starting sampler run #{run_id} with {:?}", cfg);
+
+        if let Err(e) = sample_with_config(run_id, cfg, &mut config_rx, &mut shutdown_rx).await {
+            eprintln!("[run_sampler] Sampler error: {:?}", e);
+        }
+
+        if *shutdown_rx.borrow() {
+            println!("[run_sampler] Shutdown detected after sampler error/config change");
+            break;
+        }
+
+        println!("[run_sampler] Restarting sampler after config change...");
+    }
+}
+
+
+#[tokio::main]
+async fn main() -> Result<(), LJMError> {
+    // Connect to NATS first to read KV config
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://0.0.0.0:4222".into());
+    let nc = async_nats::connect(&nats_url).await
+        .map_err(|e| LJMError::LibraryError(format!("NATS connect failed: {}", e)))?;
+    let js = jetstream::new(nc);
+
+    // KV bucket/key from env (or defaults)
+    let bucket = std::env::var("CFG_BUCKET").unwrap_or_else(|_| "sampler_cfg".into());
+    let key    = std::env::var("CFG_KEY").unwrap_or_else(|_| "active".into());
+
+    let store = ensure_kv_bucket(&js, &bucket).await?;
+    let cfg = load_config_from_kv(&store, &key).await?;
+    println!("[bootstrap] Loaded initial config from KV '{}:{}': {:?}", bucket, key, cfg);
+
+    let (config_tx, config_rx) = watch::channel(cfg);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Initialize LJM
+    #[cfg(feature = "staticlib")]
+    unsafe { LJMLibrary::init()?; }
+    #[cfg(all(feature = "dynlink", not(feature = "staticlib")))]
+    unsafe {
+        let path = std::env::var("LJM_PATH").ok();
+        LJMLibrary::init(path)?;
+    }
+
+    // Spawn sampler & KV watcher
+    tokio::spawn(run_sampler(config_rx.clone(), shutdown_rx.clone()));
+    tokio::spawn(watch_kv_config(store, key.clone(), config_tx.clone(), shutdown_rx.clone()));
+
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|e| LJMError::LibraryError(format!("Failed to listen for Ctrl+C: {}", e)))?;
+
+    println!("Shutting down...");
+    let _ = shutdown_tx.send(true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    Ok(())
 }
