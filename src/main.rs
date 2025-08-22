@@ -340,7 +340,6 @@ async fn main() -> Result<(), LJMError> {
         .map_err(|e| LJMError::LibraryError(format!("NATS connect failed: {}", e)))?;
     let js = jetstream::new(nc);
 
-    // KV bucket/key from env (or defaults)
     let bucket = std::env::var("CFG_BUCKET").unwrap_or_else(|_| "sampler_cfg".into());
     let key    = std::env::var("CFG_KEY").unwrap_or_else(|_| "active".into());
 
@@ -351,7 +350,6 @@ async fn main() -> Result<(), LJMError> {
     let (config_tx, config_rx) = watch::channel(cfg);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Initialize LJM
     #[cfg(feature = "staticlib")]
     unsafe { LJMLibrary::init()?; }
     #[cfg(all(feature = "dynlink", not(feature = "staticlib")))]

@@ -1,7 +1,7 @@
 use async_nats;
 use flatbuffers::root;
 use futures_util::stream::StreamExt; // for .next()
-use serde_json::json;
+// use serde_json::json; // uncomment if doing verbose print
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
