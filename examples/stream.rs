@@ -18,12 +18,7 @@ fn main() -> Result<(), LJMError> {
     // Open device
     let handle = LJMLibrary::open_jack(DeviceType::ANY, ConnectionType::ANY, "ANY")?;
     let info = LJMLibrary::get_handle_info(handle)?;
-    let num_ains = match info.device_type {
-        DeviceType::T4 => 12,
-        DeviceType::T8 => 8,
-        DeviceType::T7 => 14,
-        _ => 14,
-    };
+    
 
     // Configure AIN for stream
     if matches!(info.device_type, DeviceType::T7) {
