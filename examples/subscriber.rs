@@ -7,7 +7,7 @@ use std::env;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Import your generated FlatBuffers schema
 mod sample_data_generated {
@@ -24,19 +24,17 @@ fn extract_channel_token(subject: &str) -> Option<String> {
     subject.split('.').last().map(|s| s.to_string())
 }
 
-/// Open (or create) a per-channel CSV file, writing header if new/empty
-fn open_csv_for_channel(asset: u32, ch_token: &str) -> std::io::Result<File> {
+/// Open (or create) a per-channel CSV file under `out_dir`, writing header if new/empty
+fn open_csv_for_channel(out_dir: &Path, asset: u32, ch_token: &str) -> std::io::Result<File> {
     let fname = format!("labjack_{}_{}.csv", pad_asset(asset), ch_token);
-    let need_header = !Path::new(&fname).exists();
+    let path = out_dir.join(fname);
+    let need_header = !path.exists();
 
-    let file = OpenOptions::new().create(true).append(true).open(&fname)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     if need_header || file.metadata()?.len() == 0 {
-        let mut f = file;
-        writeln!(f, "timestamp,values")?;
-        Ok(f)
-    } else {
-        Ok(file)
+        writeln!(file, "timestamp,values")?;
     }
+    Ok(file)
 }
 
 #[tokio::main]
@@ -48,6 +46,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+
+    // Output directory for CSVs
+    let out_dir_str = env::var("OUTPUT_DIR").unwrap_or_else(|_| "outputs".to_string());
+    let out_dir = PathBuf::from(&out_dir_str);
+    if !out_dir.exists() {
+        std::fs::create_dir_all(&out_dir)?;
+        println!("Created output directory: {}", out_dir.display());
+    } else {
+        println!("Using output directory: {}", out_dir.display());
+    }
 
     // Subscribe to all per-channel subjects for this asset
     let wildcard = format!("{}.{}.data.*", subject_prefix, pad_asset(asset_number));
@@ -81,8 +89,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let values_vec: Vec<f64> = values.iter().collect();
 
                 // For quick sanity/logging
-                println!("[{}] {}  count={}  first={:?}",
-                    ch_token, timestamp, values_vec.len(), values_vec.first().copied());
+                println!(
+                    "[{}] {}  count={}  first={:?}",
+                    ch_token,
+                    timestamp,
+                    values_vec.len(),
+                    values_vec.first().copied()
+                );
 
                 // Optional JSON debug
                 let json_obj = json!({
@@ -93,13 +106,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 });
                 println!("As JSON: {}", json_obj);
 
-                // Open (or reuse) CSV for this channel
-                let file = files.entry(ch_token.clone())
-                    .or_insert_with(|| open_csv_for_channel(asset_number, &ch_token)
-                        .expect("failed to open per-channel csv"));
+                // Open (or reuse) CSV for this channel inside output dir
+                let out_dir_clone = out_dir.clone();
+                let file = files
+                    .entry(ch_token.clone())
+                    .or_insert_with(move || {
+                        open_csv_for_channel(&out_dir_clone, asset_number, &ch_token)
+                            .expect("failed to open per-channel csv")
+                    });
 
                 // Append one line per batch: timestamp, and all values joined by ';'
-                let values_str = values_vec.iter()
+                let values_str = values_vec
+                    .iter()
                     .map(|v| v.to_string())
                     .collect::<Vec<_>>()
                     .join(";");
@@ -108,7 +126,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 file.flush()?;
             }
             Err(_) => {
-                eprintln!("Failed to decode FlatBuffer payload for subject '{}'", msg.subject);
+                eprintln!(
+                    "Failed to decode FlatBuffer payload for subject '{}'",
+                    msg.subject
+                );
             }
         }
     }
