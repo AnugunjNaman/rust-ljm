@@ -23,6 +23,7 @@ struct SampleConfig {
     scans_per_read: i32,
     suggested_scan_rate: f64,
     channels: Vec<u8>,
+    asset_number: u32,
     nats_url: String,
     nats_subject: String,
     nats_stream: String,
@@ -37,6 +38,22 @@ impl Drop for LabJackGuard {
         let _ = LJMLibrary::stream_stop(self.handle);
         let _ = LJMLibrary::close_jack(self.handle);
     }
+}
+
+fn pad_channel(ch: u8) -> String {
+    format!("ch{ch:02}")
+}
+
+fn pad_asset(n: u32) -> String {
+    format!("{n:03}")
+}
+
+fn channel_subject(prefix: &str, asset: u32, ch: u8) -> String {
+    format!("{}.{}.data.{}", prefix, pad_asset(asset), pad_channel(ch))
+}
+
+fn stream_subject_wildcard(prefix: &str, asset: u32) -> String {
+    format!("{}.{}.data.*", prefix, pad_asset(asset))
 }
 
 #[tokio::main]
@@ -219,7 +236,7 @@ async fn sample_with_config(
         .map_err(|e| LJMError::LibraryError(format!("Failed to connect to NATS: {}", e)))?;
     let js = async_nats::jetstream::new(nc);
 
-    ensure_stream_exists(&js, &cfg.nats_stream, &cfg.nats_subject).await?;
+    ensure_stream_exists(&js, &cfg.nats_stream, &stream_subject_wildcard(&cfg.nats_subject, cfg.asset_number)).await?;
 
     let handle = LJMLibrary::open_jack(DeviceType::ANY, ConnectionType::ANY, "ANY")?;
     let _guard = LabJackGuard { handle };
@@ -287,18 +304,33 @@ async fn sample_with_config(
     loop {
         tokio::select! {
             Some(batch) = scan_rx.recv() => {
+                
                 let batch_timestamp = New_York.from_utc_datetime(&Utc::now().naive_utc()).to_rfc3339();
                 let scans = batch.chunks(num_channels);
-                for scan in scans {
+
+                let mut per_channel: Vec<Vec<f64>> = (0..num_channels).map(|_| Vec::with_capacity(scans.len())).collect();
+
+                for scan in batch.chunks(num_channels) {
+                    for (i, v) in scan.iter().enumerate() {
+                        per_channel[i].push(*v);
+                    }
+                }
+
+                for (i, values) in per_channel.into_iter().enumerate() {
                     builder.reset();
                     let ts_fb = builder.create_string(&batch_timestamp);
-                    let values_fb = builder.create_vector(scan);
-                    let scan_args = ScanArgs { timestamp: Some(ts_fb), values: Some(values_fb) };
+                    let values_fb = builder.create_vector(&values);
+                    let scan_args = ScanArgs { timestamp: Some(ts_fb), values: Some(values_fb)};
                     let scan_offset = sampler::Scan::create(&mut builder, &scan_args);
                     builder.finish(scan_offset, None);
+
                     let data = builder.finished_data().to_vec();
-                    if let Err(e) = js.publish(cfg.nats_subject.clone(), data.into()).await {
-                        eprintln!("[run #{run_id}] Failed to publish to NATS: {}", e);
+
+                    let ch_num: u8 = cfg.channels[i];
+                    let subject = channel_subject(&cfg.nats_subject, cfg.asset_number, ch_num);
+
+                    if let Err(e) = js.publish(subject, data.into()).await {
+                        eprint!("[run #{run_id}] Failed to publish to NATS: {}", e);
                     }
                 }
             }
