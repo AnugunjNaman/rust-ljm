@@ -81,22 +81,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let values_vec: Vec<f64> = values.iter().collect();
 
                 // For quick sanity/logging
-                println!(
-                    "[{}] {}  count={}  first={:?}",
-                    ch_token,
-                    timestamp,
-                    values_vec.len(),
-                    values_vec.first().copied()
-                );
+                // println!(
+                //     "[{}] {}  count={}  first={:?}",
+                //     ch_token,
+                //     timestamp,
+                //     values_vec.len(),
+                //     values_vec.first().copied()
+                // );
 
                 // Optional JSON debug
-                let json_obj = json!({
-                    "subject": msg.subject,
-                    "channel": ch_token,
-                    "timestamp": timestamp,
-                    "values": values_vec
-                });
-                println!("As JSON: {}", json_obj);
+                // let json_obj = json!({
+                //     "subject": msg.subject,
+                //     "channel": ch_token,
+                //     "timestamp": timestamp,
+                //     "values": values_vec
+                // });
+                // println!("As JSON: {}", json_obj);
 
                 // Open (or reuse) CSV for this channel inside output dir
                 let out_dir_clone = out_dir.clone();
