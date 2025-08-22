@@ -5,9 +5,7 @@ use serde_json::json;
 use std::error::Error;
 use std::fs::{OpenOptions};
 use std::io::Write;
-use chrono::{Utc};
-use chrono::TimeZone;
-use chrono_tz::America::New_York;
+
 
 // Import your generated FlatBuffers schema
 mod sample_data_generated {
@@ -18,7 +16,7 @@ use sample_data_generated::sampler;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let nats_url = "nats://100.64.0.127:4222";
+    let nats_url = "nats://0.0.0.0:4222";
     let subject = "labjack.data";
 
     // Open CSV in append mode, create if missing
