@@ -40,8 +40,6 @@ impl Drop for LabJackGuard {
     }
 }
 
-// ---- Subject helpers --------------------------------------------------------
-
 fn pad_channel(ch: u8) -> String {
     format!("ch{ch:02}")
 }
@@ -57,8 +55,6 @@ fn channel_subject(prefix: &str, asset: u32, ch: u8) -> String {
 fn stream_subject_wildcard(prefix: &str, asset: u32) -> String {
     format!("{}.{}.data.*", prefix, pad_asset(asset))
 }
-
-// ---- NATS JetStream: Stream ensure ------------------------------------------
 
 async fn ensure_stream_exists(
     js: &jetstream::Context,
@@ -91,7 +87,6 @@ async fn ensure_stream_exists(
     Ok(())
 }
 
-// ---- NATS JetStream KV: bucket + config load/watch --------------------------
 
 async fn ensure_kv_bucket(js: &jetstream::Context, bucket: &str) -> Result<kv::Store, LJMError> {
     if let Ok(store) = js.get_key_value(bucket).await {
@@ -162,7 +157,6 @@ async fn watch_kv_config(
     }
 }
 
-// ---- Sampler ----------------------------------------------------------------
 
 use std::sync::{
     Arc,
@@ -330,7 +324,6 @@ async fn run_sampler(
 }
 
 
-// ---- Main: bootstrap with KV config -----------------------------------------
 
 #[tokio::main]
 async fn main() -> Result<(), LJMError> {
