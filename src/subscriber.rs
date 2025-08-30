@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 // Import your generated FlatBuffers schema
 mod sample_data_generated {
     #![allow(dead_code, unused_imports)]
-    include!("../src/data_generated.rs"); // path relative to examples/
+    include!("data_generated.rs"); // path relative to examples/
 }
 use sample_data_generated::sampler;
 

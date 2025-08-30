@@ -15,7 +15,7 @@ use parquet::file::properties::WriterProperties;
 
 mod sample_data_generated {
     #![allow(dead_code, unused_imports)]
-    include!("../src/data_generated.rs");
+    include!("data_generated.rs");
 }
 use sample_data_generated::sampler;
 

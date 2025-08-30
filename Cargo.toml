@@ -37,6 +37,14 @@ staticlib = []
 name = "streamer"
 path = "src/main.rs"
 
+[[bin]]
+name = "archiver"
+path = "src/store.rs"
+
+[[bin]]
+name = "subscriber"
+path = "src/subscriber.rs"
+
 
 
 
