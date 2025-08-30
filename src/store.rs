@@ -10,7 +10,7 @@ use parquet::{
 };
 use async_nats::{self, jetstream};
 use futures_util::StreamExt;
-use tokio::time::{interval, Duration};
+use tokio::time::Duration;
 use chrono::{Utc, NaiveDate};
 
 mod sample_data_generated {
@@ -34,6 +34,7 @@ struct SampleConfig {
     rotate_secs: u64,
 }
 
+#[allow(dead_code)]
 struct ParquetLogger {
     writer: SerializedFileWriter<fs::File>,
     buffer: Vec<(String, f64)>,
@@ -118,12 +119,14 @@ impl ParquetLogger {
 
     fn close(mut self) {
         self.flush(); 
-        self.writer.close().unwrap();
+        if let Err(e) = self.writer.close() {
+            eprintln!("Failed to close parquet file: {e}");
+        }
     }
 }
 
 
-async fn spawn_channel_logger(
+fn spawn_channel_logger(
     nc: async_nats::Client,
     subject: String,
     asset: u32,
@@ -134,7 +137,7 @@ async fn spawn_channel_logger(
         let mut sub = nc.subscribe(subject.clone()).await.unwrap();
         println!("[logger] Subscribed to {subject}");
 
-        let mut ticker = interval(Duration::from_secs(rotate_secs));
+        let mut ticker = tokio::time::interval(Duration::from_secs(rotate_secs));
         let mut logger: Option<ParquetLogger> = None;
         let mut file_index = 0;
 
@@ -145,6 +148,7 @@ async fn spawn_channel_logger(
                         if let Some(ts) = scan.timestamp() {
                             if let Some(vals) = scan.values() {
                                 let today = Utc::now().date_naive();
+
                                 // rollover if date changed
                                 if logger.as_ref().map(|l| l.date != today).unwrap_or(true) {
                                     if let Some(l) = logger.take() {
@@ -180,6 +184,7 @@ async fn spawn_channel_logger(
 }
 
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
@@ -208,9 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         nc
     };
 
-    //
-    // Step 4: spawn loggers
-    //
+    
     for ch in &cfg.channels {
         let subject = format!(
             "{}.{:03}.data.ch{:02}",
@@ -221,8 +224,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             subject,
             cfg.asset_number,
             *ch,
-            cfg.rotate_secs
-        ).await;
+            cfg.rotate_secs,
+        ); 
     }
 
 
