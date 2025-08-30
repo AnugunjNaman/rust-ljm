@@ -27,6 +27,7 @@ struct SampleConfig {
     nats_url: String,
     nats_subject: String,
     nats_stream: String,
+    rotate_secs: u64,
 }
 
 struct LabJackGuard {

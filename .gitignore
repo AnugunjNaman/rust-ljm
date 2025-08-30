@@ -9,3 +9,7 @@
 
 # FBS log/output files
 *.fbsdata
+
+
+# parquet files ignire
+parquet/*

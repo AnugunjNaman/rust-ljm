@@ -45,6 +45,10 @@ path = "src/store.rs"
 name = "subscriber"
 path = "src/subscriber.rs"
 
+[[bin]]
+name = "info"
+path = "examples/info.rs"
+
 
 
 
