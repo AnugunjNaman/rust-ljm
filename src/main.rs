@@ -10,6 +10,7 @@ use ljmrs::handle::{DeviceType, ConnectionType};
 use flatbuffers::FlatBufferBuilder;
 use async_nats::jetstream::{self, kv, stream::Config as StreamConfig};
 use async_nats::jetstream::kv::Operation;
+use async_nats::{ConnectOptions, ServerAddr};
 use futures_util::StreamExt;
 
 mod sample_data_generated {
@@ -18,17 +19,58 @@ mod sample_data_generated {
 }
 use sample_data_generated::sampler::{self, ScanArgs};
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+struct NestedConfig {
+    labjack_name: String,
+    asset_number: u32,
+    max_channels: u32,
+    nats_subject: String,
+    nats_stream: String,
+    rotate_secs: u64,
+    sensor_settings: SensorSettings,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+struct SensorSettings {
+    scan_rate: i32,
+    sampling_rate: f64,
+    channels_enabled: Vec<u8>,
+    gains: i32,
+    data_formats: Vec<String>,
+    measurement_units: Vec<String>,
+    labjack_on_off: bool,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct SampleConfig {
     scans_per_read: i32,
     suggested_scan_rate: f64,
     channels: Vec<u8>,
     asset_number: u32,
-    nats_url: String,
     nats_subject: String,
     nats_stream: String,
     rotate_secs: u64,
 }
+
+
+impl From<(NestedConfig, &SampleConfig)> for SampleConfig {
+    fn from((nested, base): (NestedConfig, &SampleConfig)) -> Self {
+        let raw = nested.sensor_settings;
+        SampleConfig {
+            scans_per_read: raw.scan_rate, 
+            suggested_scan_rate: raw.sampling_rate,
+            channels: raw.channels_enabled,
+            asset_number: base.asset_number,
+            nats_subject: base.nats_subject.clone(),
+            nats_stream: base.nats_stream.clone(),
+            rotate_secs: base.rotate_secs,
+        }
+    }
+}
+
 
 struct LabJackGuard {
     handle: i32,
@@ -108,13 +150,29 @@ async fn ensure_kv_bucket(js: &jetstream::Context, bucket: &str) -> Result<kv::S
 async fn load_config_from_kv(store: &kv::Store, key: &str) -> Result<SampleConfig, LJMError> {
     match store.entry(key).await {
         Ok(Some(entry)) => {
-            serde_json::from_slice::<SampleConfig>(entry.value.as_ref())
-                .map_err(|e| LJMError::LibraryError(format!("Config JSON parse error: {}", e)))
+            let nested_cfg: NestedConfig = serde_json::from_slice(entry.value.as_ref())
+                .map_err(|e| LJMError::LibraryError(format!("Config JSON parse error: {}", e)))?;
+
+            let cfg = SampleConfig {
+                scans_per_read: nested_cfg.sensor_settings.scan_rate,
+                suggested_scan_rate: nested_cfg.sensor_settings.sampling_rate,
+                channels: nested_cfg.sensor_settings.channels_enabled.clone(),
+                asset_number: nested_cfg.asset_number,
+                nats_subject: nested_cfg.nats_subject.clone(),
+                nats_stream: nested_cfg.nats_stream.clone(),
+                rotate_secs: nested_cfg.rotate_secs,
+            };
+
+            Ok(cfg)
         }
         Ok(None) => Err(LJMError::LibraryError(format!("KV key '{}' not found", key))),
         Err(e) => Err(LJMError::LibraryError(format!("KV entry error for '{}': {}", key, e))),
     }
 }
+
+
+
+
 
 
 async fn watch_kv_config(
@@ -135,13 +193,52 @@ async fn watch_kv_config(
                 match maybe {
                     Some(Ok(entry)) => {
                         if entry.operation == Operation::Put {
-                            if let Ok(new_cfg) = serde_json::from_slice::<SampleConfig>(entry.value.as_ref()) {
-                                if new_cfg != *config_tx.borrow() {
-                                    println!("[watch_kv_config] KV config updated (rev {}): {:?}", entry.revision, new_cfg);
-                                    let _ = config_tx.send(new_cfg);
+                            // try nested format first
+                            let parsed = serde_json::from_slice::<NestedConfig>(entry.value.as_ref())
+                                .map(|nested| {
+                                    let raw = nested.sensor_settings;
+                                    let base = config_tx.borrow().clone();
+
+                                    SampleConfig {
+                                        scans_per_read: raw.scan_rate,
+                                        suggested_scan_rate: raw.sampling_rate,
+                                        channels: raw.channels_enabled,
+                                        asset_number: base.asset_number,
+                                        nats_subject: base.nats_subject,
+                                        nats_stream: base.nats_stream,
+                                        rotate_secs: base.rotate_secs,
+                                    }
+
+                                })
+                                .or_else(|_| {
+                                    serde_json::from_slice::<NestedConfig>(entry.value.as_ref())
+                                        .map(|nested| {
+                                            let raw = nested.sensor_settings;
+                                            SampleConfig {
+                                                scans_per_read: raw.scan_rate,
+                                                suggested_scan_rate: raw.sampling_rate,
+                                                channels: raw.channels_enabled,
+                                                asset_number: nested.asset_number,
+                                                nats_subject: nested.nats_subject,
+                                                nats_stream: nested.nats_stream,
+                                                rotate_secs: nested.rotate_secs,
+                                            }
+                                        })
+                                });
+
+                            match parsed {
+                                Ok(new_cfg) => {
+                                    if new_cfg != *config_tx.borrow() {
+                                        println!(
+                                            "[watch_kv_config] KV config updated (rev {}): {:?}",
+                                            entry.revision, new_cfg
+                                        );
+                                        let _ = config_tx.send(new_cfg);
+                                    }
                                 }
-                            } else {
-                                eprintln!("[watch_kv_config] Invalid JSON in KV for key '{}'", entry.key);
+                                Err(e) => {
+                                    eprintln!("[watch_kv_config] Failed to parse JSON for key '{}': {}", entry.key, e);
+                                }
                             }
                         } else {
                             eprintln!("[watch_kv_config] {:?} for key '{}', ignoring.", entry.operation, entry.key);
@@ -159,6 +256,7 @@ async fn watch_kv_config(
 }
 
 
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering}
@@ -169,12 +267,9 @@ async fn sample_with_config(
     cfg: SampleConfig,
     config_rx: &mut watch::Receiver<SampleConfig>,
     shutdown_rx: &mut watch::Receiver<bool>,
+    js: &jetstream::Context,
 ) -> Result<(), LJMError> {
-    println!("[run #{run_id}] Connecting to NATS at {}", cfg.nats_url);
-    let nc = async_nats::connect(cfg.nats_url.clone())
-        .await
-        .map_err(|e| LJMError::LibraryError(format!("Failed to connect to NATS: {}", e)))?;
-    let js = async_nats::jetstream::new(nc);
+
 
     ensure_stream_exists(&js, &cfg.nats_stream, &stream_subject_wildcard(&cfg.nats_subject, cfg.asset_number)).await?;
 
@@ -300,6 +395,7 @@ async fn sample_with_config(
 async fn run_sampler(
     mut config_rx: tokio::sync::watch::Receiver<SampleConfig>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    js: jetstream::Context,
 ) {
     let mut run_id = 0;
     loop {
@@ -311,7 +407,7 @@ async fn run_sampler(
         let cfg = config_rx.borrow().clone();
         println!("[run_sampler] Starting sampler run #{run_id} with {:?}", cfg);
 
-        if let Err(e) = sample_with_config(run_id, cfg, &mut config_rx, &mut shutdown_rx).await {
+        if let Err(e) = sample_with_config(run_id, cfg, &mut config_rx, &mut shutdown_rx, &js).await {
             eprintln!("[run_sampler] Sampler error: {:?}", e);
         }
 
@@ -326,16 +422,37 @@ async fn run_sampler(
 
 
 
+
 #[tokio::main]
 async fn main() -> Result<(), LJMError> {
     
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://0.0.0.0:4222".into());
-    let nc = async_nats::connect(&nats_url).await
+    let creds_path = std::env::var("NATS_CREDS_FILE").unwrap_or_else(|_| "apt.creds".into());
+    let opts = ConnectOptions::with_credentials_file(creds_path)
+        .await
+        .map_err(|e| LJMError::LibraryError(format!("Failed to load creds: {}", e)))?;
+
+    let servers: Vec<ServerAddr> = vec![
+        "nats://nats1.oats:4222"
+            .parse()
+            .map_err(|e| LJMError::LibraryError(format!("invalid server addr: {}", e)))?,
+        "nats://nats2.oats:4222"
+            .parse()
+            .map_err(|e| LJMError::LibraryError(format!("invalid server addr: {}", e)))?,
+        "nats://nats3.oats:4222"
+            .parse()
+            .map_err(|e| LJMError::LibraryError(format!("invalid server addr: {}", e)))?,
+    ];
+
+    let nc = opts
+        .connect(servers)
+        .await
         .map_err(|e| LJMError::LibraryError(format!("NATS connect failed: {}", e)))?;
+        
+    println!("Connected to NATS via creds!");
     let js = jetstream::new(nc);
 
-    let bucket = std::env::var("CFG_BUCKET").unwrap_or_else(|_| "sampler_cfg".into());
-    let key    = std::env::var("CFG_KEY").unwrap_or_else(|_| "active".into());
+    let bucket = std::env::var("CFG_BUCKET").unwrap_or_else(|_| "avenabox".into());
+    let key    = std::env::var("CFG_KEY").unwrap_or_else(|_| "labjackd.config.macbook".into());
 
     let store = ensure_kv_bucket(&js, &bucket).await?;
     let cfg = load_config_from_kv(&store, &key).await?;
@@ -352,7 +469,7 @@ async fn main() -> Result<(), LJMError> {
         LJMLibrary::init(path)?;
     }
 
-    tokio::spawn(run_sampler(config_rx.clone(), shutdown_rx.clone()));
+    tokio::spawn(run_sampler(config_rx.clone(), shutdown_rx.clone(), js.clone()));
     tokio::spawn(watch_kv_config(store, key.clone(), config_tx.clone(), shutdown_rx.clone()));
 
     tokio::signal::ctrl_c()
